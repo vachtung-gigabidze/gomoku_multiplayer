@@ -13,6 +13,10 @@ dependencies:
   http: any
   provider: ^6.1.5+1 
   shared_preferences: ^2.5.3
+  supabase_flutter: ^2.10.3
+  supabase_annotations: ^1.2.0
+  riverpod: ^3.0.3
+  flutter_dotenv: ^6.0.0
 
 dev_dependencies:
   flutter_test:
@@ -21,3 +25,5 @@ dev_dependencies:
 
 flutter:
   uses-material-design: true
+  assets:
+    - .env

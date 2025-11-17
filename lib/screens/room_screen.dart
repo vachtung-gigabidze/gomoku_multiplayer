@@ -11,11 +11,36 @@ class RoomScreen extends StatefulWidget {
 
 class _RoomScreenState extends State<RoomScreen> {
   final TextEditingController _messageController = TextEditingController();
+  bool _isSubscribed = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _initializeSubscriptions();
+  }
+
+  void _initializeSubscriptions() async {
+    // Ждем завершения build перед подпиской
+    await Future.delayed(Duration.zero);
+
+    final gameProvider = Provider.of<GameProvider>(context, listen: false);
+    if (gameProvider.roomId != null) {
+      gameProvider.subscribeToRoom(gameProvider.roomId!);
+      gameProvider.subscribeToChat(gameProvider.roomId!);
+      setState(() {
+        _isSubscribed = true;
+      });
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
     return Consumer<GameProvider>(
       builder: (context, gameProvider, child) {
+        if (gameProvider.roomId == null || !_isSubscribed) {
+          return const Scaffold(body: Center(child: CircularProgressIndicator()));
+        }
+
         return Scaffold(
           appBar: AppBar(
             title: Text(gameProvider.currentRoom?['name'] ?? 'Room'),
@@ -29,17 +54,15 @@ class _RoomScreenState extends State<RoomScreen> {
               ),
             ],
           ),
-          body: gameProvider.currentRoom == null
-              ? const Center(child: CircularProgressIndicator())
-              : Row(
-                  children: [
-                    // Game Board
-                    Expanded(flex: 2, child: _buildGameBoard(gameProvider)),
+          body: Row(
+            children: [
+              // Game Board
+              Expanded(flex: 2, child: _buildGameBoard(gameProvider)),
 
-                    // Chat and Info
-                    Expanded(flex: 1, child: _buildSidePanel(gameProvider)),
-                  ],
-                ),
+              // Chat and Info
+              Expanded(flex: 1, child: _buildSidePanel(gameProvider)),
+            ],
+          ),
         );
       },
     );
