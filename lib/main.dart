@@ -17,7 +17,7 @@ import 'package:gomoku_multiplayer/app.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  await dotenv.load(fileName: ".env");
+  await dotenv.load(fileName: "env");
   await SupabaseService.initialize(); //initialize(url: dotenv.env['SUPABASE_URL'] ?? "SUPABASE_URL", anonKey: dotenv.env['SUPABASE_ANONKEY'] ?? "SUPABASE_ANONKEY");
 
   // runZonedGuarded(() {
