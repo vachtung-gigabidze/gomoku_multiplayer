@@ -259,25 +259,52 @@ class GameProvider with ChangeNotifier {
     }
   }
 
-  // Real-time подписки
+  // Real-time подписки с логированием
   void subscribeToRooms() {
-    _supabase.watchRooms().listen((rooms) {
-      _updateRooms(rooms);
-    });
+    print('Subscribing to rooms updates...');
+    _supabase.watchRooms().listen(
+      (rooms) {
+        print('Rooms updated: ${rooms.length} rooms');
+        _updateRooms(rooms);
+      },
+      onError: (error) {
+        print('Error in rooms subscription: $error');
+      },
+    );
   }
 
   void subscribeToRoom(String roomId) {
-    _supabase.watchRoom(roomId).listen((room) {
-      if (room.isNotEmpty) {
-        _updateRoomState(room);
-      }
-    });
+    print('Subscribing to room: $roomId');
+    _supabase
+        .watchRoom(roomId)
+        .listen(
+          (room) {
+            if (room.isNotEmpty) {
+              print('Room updated: ${room['name']}');
+              _updateRoomState(room);
+            } else {
+              print('Room $roomId not found in subscription');
+            }
+          },
+          onError: (error) {
+            print('Error in room subscription: $error');
+          },
+        );
   }
 
   void subscribeToChat(String roomId) {
-    _supabase.watchChatMessages(roomId).listen((messages) {
-      _updateChatMessages(messages);
-    });
+    print('Subscribing to chat for room: $roomId');
+    _supabase
+        .watchChatMessages(roomId)
+        .listen(
+          (messages) {
+            print('Chat updated: ${messages.length} messages');
+            _updateChatMessages(messages);
+          },
+          onError: (error) {
+            print('Error in chat subscription: $error');
+          },
+        );
   }
 
   // Вспомогательные методы для обновления состояния
@@ -404,36 +431,56 @@ class GameProvider with ChangeNotifier {
     super.dispose();
   }
 
-  // Загрузка профиля пользователя
-  Future<void> loadUserProfile() async {
+  Future<void> updateProfile({required String username, String? avatarUrl}) async {
     _setProfileLoading(true);
+    _errorMessage = null;
+
     try {
-      _userProfile = await _supabase.getProfile();
-      _userStats = await _supabase.getUserStats();
+      print('GameProvider: Updating profile with username: $username');
+
+      await _supabase.updateProfile(username: username, avatarUrl: avatarUrl);
+
+      // Перезагружаем профиль чтобы получить обновленные данные
+      await loadUserProfile();
+
       _safeNotifyListeners();
+
+      print('GameProvider: Profile updated successfully');
     } catch (e) {
-      if (kDebugMode) {
-        print('Error loading user profile: $e');
-      }
+      // Сохраняем имя пользователя локально даже если обновление не удалось
+      _username = username;
+      _errorMessage = 'Profile update failed: ${e.toString()}';
+      print('GameProvider: Error updating profile: $e');
+      _safeNotifyListeners();
+
+      // Не бросаем исключение, чтобы пользователь мог продолжить использовать приложение
     } finally {
       _setProfileLoading(false);
     }
   }
 
-  // Обновление профиля
-  Future<void> updateProfile({required String username, String? avatarUrl}) async {
+  // Исправленный метод loadUserProfile
+  Future<void> loadUserProfile() async {
     _setProfileLoading(true);
     try {
-      await _supabase.updateProfile(username: username, avatarUrl: avatarUrl);
+      print('GameProvider: Loading user profile...');
 
-      // Перезагружаем профиль
-      await loadUserProfile();
+      _userProfile = await _supabase.getProfile();
+      _userStats = await _supabase.getUserStats();
+
+      // Обновляем локальное имя пользователя
+      if (_userProfile != null && _userProfile!['username'] != null) {
+        _username = _userProfile!['username'];
+      }
+
+      print('GameProvider: User profile loaded: $_userProfile');
+      print('GameProvider: User stats loaded: $_userStats');
+
       _safeNotifyListeners();
     } catch (e) {
-      if (kDebugMode) {
-        print('Error updating profile: $e');
-      }
-      rethrow;
+      print('GameProvider: Error loading user profile: $e');
+      _errorMessage = 'Failed to load profile: ${e.toString()}';
+      _safeNotifyListeners();
     } finally {
       _setProfileLoading(false);
     }

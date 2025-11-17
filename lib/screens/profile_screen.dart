@@ -13,12 +13,12 @@ class ProfileScreen extends StatefulWidget {
 
 class _ProfileScreenState extends State<ProfileScreen> {
   final _usernameController = TextEditingController();
-  final _emailController = TextEditingController();
   final _formKey = GlobalKey<FormState>();
 
   File? _selectedImage;
   bool _isEditing = false;
   bool _isMounted = true;
+  bool _isSaving = false;
 
   @override
   void initState() {
@@ -26,16 +26,25 @@ class _ProfileScreenState extends State<ProfileScreen> {
     _loadProfileData();
   }
 
-  void _loadProfileData() async {
+  void _loadProfileData() {
     final gameProvider = Provider.of<GameProvider>(context, listen: false);
-    if (gameProvider.userProfile == null) {
-      await gameProvider.loadUserProfile();
-    }
 
+    // Загружаем профиль если еще не загружен
+    if (gameProvider.userProfile == null) {
+      gameProvider.loadUserProfile().then((_) {
+        if (_isMounted) {
+          _updateControllers(gameProvider);
+        }
+      });
+    } else {
+      _updateControllers(gameProvider);
+    }
+  }
+
+  void _updateControllers(GameProvider gameProvider) {
     if (_isMounted) {
       setState(() {
         _usernameController.text = gameProvider.userProfile?['username'] ?? gameProvider.username ?? 'Player';
-        _emailController.text = gameProvider.email ?? '';
       });
     }
   }
@@ -50,23 +59,33 @@ class _ProfileScreenState extends State<ProfileScreen> {
       });
 
       // Автоматически загружаем изображение при выборе
-      try {
-        final gameProvider = Provider.of<GameProvider>(context, listen: false);
-        await gameProvider.uploadAvatar(_selectedImage!);
+      await _uploadAvatar(_selectedImage!);
+    }
+  }
 
-        if (_isMounted) {
-          ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Avatar updated successfully!'), backgroundColor: Colors.green));
-        }
-      } catch (e) {
-        if (_isMounted) {
-          ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Failed to upload avatar: $e'), backgroundColor: Colors.red));
-        }
+  Future<void> _uploadAvatar(File imageFile) async {
+    try {
+      final gameProvider = Provider.of<GameProvider>(context, listen: false);
+      final avatarUrl = await gameProvider.uploadAvatar(imageFile);
+
+      if (_isMounted && avatarUrl != null) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Avatar updated successfully!'), backgroundColor: Colors.green));
+      }
+    } catch (e) {
+      if (_isMounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Failed to upload avatar: $e'), backgroundColor: Colors.red));
       }
     }
   }
 
   Future<void> _saveProfile() async {
     if (!_formKey.currentState!.validate()) return;
+
+    if (_isSaving) return; // Предотвращаем множественные сохранения
+
+    setState(() {
+      _isSaving = true;
+    });
 
     try {
       final gameProvider = Provider.of<GameProvider>(context, listen: false);
@@ -75,64 +94,39 @@ class _ProfileScreenState extends State<ProfileScreen> {
       if (_isMounted) {
         setState(() {
           _isEditing = false;
+          _isSaving = false;
         });
 
         ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Profile updated successfully!'), backgroundColor: Colors.green));
       }
     } catch (e) {
       if (_isMounted) {
+        setState(() {
+          _isSaving = false;
+        });
+
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Failed to update profile: $e'), backgroundColor: Colors.red));
       }
     }
   }
 
-  void _showDeleteAccountDialog() {
-    showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Delete Account'),
-        content: const Text(
-          'Are you sure you want to delete your account? '
-          'This action cannot be undone and all your data will be lost.',
-        ),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancel')),
-          TextButton(
-            onPressed: () async {
-              Navigator.pop(context);
-              await _deleteAccount();
-            },
-            child: const Text('Delete', style: TextStyle(color: Colors.red)),
-          ),
-        ],
-      ),
-    );
+  void _cancelEdit() {
+    // Восстанавливаем оригинальные значения
+    final gameProvider = Provider.of<GameProvider>(context, listen: false);
+    _usernameController.text = gameProvider.userProfile?['username'] ?? 'Player';
+
+    setState(() {
+      _isEditing = false;
+      _selectedImage = null;
+    });
   }
 
-  Future<void> _deleteAccount() async {
-    try {
-      final gameProvider = Provider.of<GameProvider>(context, listen: false);
-      await gameProvider.deleteAccount();
-
-      if (_isMounted) {
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Account deleted successfully'), backgroundColor: Colors.green));
-
-        Navigator.pop(context); // Возвращаемся на предыдущий экран
-      }
-    } catch (e) {
-      if (_isMounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Failed to delete account: $e'), backgroundColor: Colors.red));
-      }
-    }
-  }
-
-  Widget _buildAvatar() {
-    final gameProvider = Provider.of<GameProvider>(context);
+  Widget _buildAvatar(GameProvider gameProvider) {
     final avatarUrl = gameProvider.userProfile?['avatar_url'];
     final username = gameProvider.userProfile?['username'] ?? 'Player';
 
     return GestureDetector(
-      onTap: _pickImage,
+      onTap: _isEditing ? _pickImage : null,
       child: Stack(
         children: [
           CircleAvatar(
@@ -146,19 +140,20 @@ class _ProfileScreenState extends State<ProfileScreen> {
                   )
                 : null,
           ),
-          Positioned(
-            bottom: 0,
-            right: 0,
-            child: Container(
-              padding: const EdgeInsets.all(4),
-              decoration: BoxDecoration(
-                color: Colors.blue,
-                shape: BoxShape.circle,
-                border: Border.all(color: Colors.white, width: 2),
+          if (_isEditing)
+            Positioned(
+              bottom: 0,
+              right: 0,
+              child: Container(
+                padding: const EdgeInsets.all(4),
+                decoration: BoxDecoration(
+                  color: Colors.blue,
+                  shape: BoxShape.circle,
+                  border: Border.all(color: Colors.white, width: 2),
+                ),
+                child: const Icon(Icons.camera_alt, size: 16, color: Colors.white),
               ),
-              child: const Icon(Icons.camera_alt, size: 16, color: Colors.white),
             ),
-          ),
         ],
       ),
     );
@@ -200,11 +195,32 @@ class _ProfileScreenState extends State<ProfileScreen> {
     );
   }
 
+  Widget _buildActionButtons() {
+    if (_isSaving) {
+      return const Center(child: CircularProgressIndicator());
+    }
+
+    if (_isEditing) {
+      return Row(
+        children: [
+          Expanded(
+            child: OutlinedButton(onPressed: _cancelEdit, child: const Text('Cancel')),
+          ),
+          const SizedBox(width: 16),
+          Expanded(
+            child: ElevatedButton(onPressed: _saveProfile, child: const Text('Save')),
+          ),
+        ],
+      );
+    } else {
+      return ElevatedButton(onPressed: () => setState(() => _isEditing = true), child: const Text('Edit Profile'));
+    }
+  }
+
   @override
   void dispose() {
     _isMounted = false;
     _usernameController.dispose();
-    _emailController.dispose();
     super.dispose();
   }
 
@@ -217,11 +233,11 @@ class _ProfileScreenState extends State<ProfileScreen> {
             title: const Text('Profile'),
             backgroundColor: Colors.blue,
             foregroundColor: Colors.white,
-            actions: [
-              if (_isEditing) IconButton(icon: const Icon(Icons.save), onPressed: _saveProfile) else IconButton(icon: const Icon(Icons.edit), onPressed: () => setState(() => _isEditing = true)),
-            ],
+            actions: _isEditing
+                ? [IconButton(icon: const Icon(Icons.save), onPressed: _isSaving ? null : _saveProfile)]
+                : [IconButton(icon: const Icon(Icons.edit), onPressed: () => setState(() => _isEditing = true))],
           ),
-          body: gameProvider.isProfileLoading
+          body: gameProvider.isProfileLoading && gameProvider.userProfile == null
               ? const Center(child: CircularProgressIndicator())
               : SingleChildScrollView(
                   padding: const EdgeInsets.all(16.0),
@@ -230,7 +246,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                       // Avatar Section
                       Column(
                         children: [
-                          _buildAvatar(),
+                          _buildAvatar(gameProvider),
                           const SizedBox(height: 16),
                           Text(gameProvider.userProfile?['username'] ?? 'Player', style: const TextStyle(fontSize: 24, fontWeight: FontWeight.bold)),
                           Text(gameProvider.email ?? '', style: TextStyle(fontSize: 16, color: Colors.grey[600])),
@@ -252,7 +268,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                             TextFormField(
                               controller: _usernameController,
                               decoration: const InputDecoration(labelText: 'Username', border: OutlineInputBorder(), prefixIcon: Icon(Icons.person)),
-                              enabled: _isEditing,
+                              enabled: _isEditing && !_isSaving,
                               validator: (value) {
                                 if (value == null || value.isEmpty) {
                                   return 'Please enter username';
@@ -267,51 +283,33 @@ class _ProfileScreenState extends State<ProfileScreen> {
                             const SizedBox(height: 16),
 
                             TextFormField(
-                              controller: _emailController,
                               decoration: const InputDecoration(labelText: 'Email', border: OutlineInputBorder(), prefixIcon: Icon(Icons.email)),
-                              enabled: false, // Email нельзя изменить напрямую
-                              readOnly: true,
+                              enabled: false,
+                              initialValue: gameProvider.email ?? '',
                             ),
                           ],
                         ),
                       ),
 
+                      const SizedBox(height: 24),
+
+                      // Action Buttons
+                      _buildActionButtons(),
+
                       const SizedBox(height: 32),
 
-                      // Danger Zone
-                      Card(
-                        color: Colors.red.shade50,
-                        child: Padding(
-                          padding: const EdgeInsets.all(16.0),
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              const Text(
-                                'Danger Zone',
-                                style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.red),
-                              ),
-                              const SizedBox(height: 8),
-                              const Text(
-                                'Once you delete your account, there is no going back. '
-                                'Please be certain.',
-                                style: TextStyle(color: Colors.red),
-                              ),
-                              const SizedBox(height: 16),
-                              SizedBox(
-                                width: double.infinity,
-                                child: OutlinedButton(
-                                  onPressed: _showDeleteAccountDialog,
-                                  style: OutlinedButton.styleFrom(
-                                    foregroundColor: Colors.red,
-                                    side: const BorderSide(color: Colors.red),
-                                  ),
-                                  child: const Text('Delete Account'),
-                                ),
-                              ),
-                            ],
+                      // Error Message
+                      if (gameProvider.errorMessage != null)
+                        Container(
+                          width: double.infinity,
+                          padding: const EdgeInsets.all(12),
+                          decoration: BoxDecoration(
+                            color: Colors.red.shade50,
+                            borderRadius: BorderRadius.circular(8),
+                            border: Border.all(color: Colors.red),
                           ),
+                          child: Text(gameProvider.errorMessage!, style: const TextStyle(color: Colors.red)),
                         ),
-                      ),
                     ],
                   ),
                 ),

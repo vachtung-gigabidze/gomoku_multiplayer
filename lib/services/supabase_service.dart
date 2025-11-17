@@ -54,7 +54,7 @@ class SupabaseService {
       if (response.user != null) {
         final username = response.user!.userMetadata?['username'] as String?;
         if (username != null) {
-          await _createProfile(response.user!.id, username);
+          await _createProfile(response.user!.id, username, null);
         }
       }
 
@@ -78,14 +78,26 @@ class SupabaseService {
   }
 
   // Создание профиля
-  Future<void> _createProfile(String userId, String username) async {
+  Future<void> _createProfile(String userId, String username, String? avatarUrl) async {
     try {
-      await _client.from('profiles').upsert({'id': userId, 'username': username, 'updated_at': DateTime.now().toIso8601String()});
-    } catch (e) {
-      // Игнорируем ошибки если профиль уже существует
-      if (kDebugMode) {
-        print('Profile creation error: $e');
+      print('Creating new profile for user: $userId');
+
+      final profileData = {'id': userId, 'username': username, 'created_at': DateTime.now().toIso8601String(), 'updated_at': DateTime.now().toIso8601String()};
+
+      if (avatarUrl != null) {
+        profileData['avatar_url'] = avatarUrl;
       }
+
+      final response = await _client.from('profiles').insert(profileData).select();
+
+      if (response.isEmpty) {
+        throw Exception('Failed to create profile');
+      }
+
+      print('Profile created successfully: ${response.first}');
+    } catch (e) {
+      print('Error creating profile: $e');
+      rethrow;
     }
   }
 
@@ -187,6 +199,104 @@ class SupabaseService {
       }
       rethrow;
     }
+  }
+
+  // Future<Map<String, dynamic>> joinRoom(String roomId) async {
+  //   final user = _client.auth.currentUser;
+  //   if (user == null) throw Exception('Not authenticated');
+
+  //   try {
+  //     print('=== JOIN ROOM PROCESS START ===');
+  //     print('Room: $roomId, User: ${user.id}');
+
+  //     // Метод 1: Пробуем RPC функцию в первую очередь
+  //     try {
+  //       print('Trying RPC method...');
+  //       final rpcResponse = await _client.rpc('join_room', params: {'p_room_id': roomId, 'p_user_id': user.id, 'p_user_name': user.userMetadata?['username'] ?? 'Player'});
+
+  //       print('RPC response: $rpcResponse');
+
+  //       if (rpcResponse != null && rpcResponse['success'] == true) {
+  //         // Успешно присоединились через RPC
+  //         final roomResponse = await _client.from('rooms').select('*').eq('id', roomId);
+
+  //         if (roomResponse.isNotEmpty) {
+  //           final updatedRoom = roomResponse.first as Map<String, dynamic>;
+  //           final players = List<Map<String, dynamic>>.from(updatedRoom['players'] ?? []);
+
+  //           final playerNumber = players.firstWhere((p) => p['id'] == user.id, orElse: () => {'playerNumber': players.length})['playerNumber'];
+
+  //           print('✅ Successfully joined room via RPC as player $playerNumber');
+
+  //           return {'success': true, 'role': 'player', 'playerNumber': playerNumber, 'room': updatedRoom};
+  //         }
+  //       } else if (rpcResponse != null && rpcResponse['error'] != null) {
+  //         throw Exception('RPC Error: ${rpcResponse['error']}');
+  //       }
+  //     } catch (rpcError) {
+  //       print('❌ RPC method failed: $rpcError');
+  //     }
+
+  //     // Метод 2: Прямое обновление через Supabase
+  //     print('Trying direct update method...');
+  //     return await _joinRoomDirectUpdate(roomId, user);
+  //   } catch (e) {
+  //     print('❌ All join methods failed: $e');
+  //     rethrow;
+  //   } finally {
+  //     print('=== JOIN ROOM PROCESS END ===');
+  //   }
+  // }
+
+  // Прямое обновление комнаты
+  Future<Map<String, dynamic>> _joinRoomDirectUpdate(String roomId, User user) async {
+    // 1. Получаем текущую комнату
+    final roomResponse = await _client.from('rooms').select('*').eq('id', roomId);
+
+    if (roomResponse.isEmpty) {
+      throw Exception('Room not found');
+    }
+
+    final room = roomResponse.first as Map<String, dynamic>;
+    final players = List<Map<String, dynamic>>.from(room['players'] ?? []);
+    final gameState = Map<String, dynamic>.from(room['game_state'] ?? {});
+
+    print('Room status - Players: ${players.length}, Game started: ${gameState['gameStarted']}');
+
+    // 2. Проверяем условия присоединения
+    if (gameState['gameStarted'] == true) {
+      throw Exception('Game already started');
+    }
+
+    if (players.length >= 2) {
+      throw Exception('Room is full (${players.length}/2)');
+    }
+
+    // 3. Проверяем, не присоединен ли уже пользователь
+    if (players.any((p) => p['id'] == user.id)) {
+      final playerNumber = players.firstWhere((p) => p['id'] == user.id)['playerNumber'];
+      print('User already in room as player $playerNumber');
+      return {'success': true, 'role': 'player', 'playerNumber': playerNumber, 'room': room};
+    }
+
+    // 4. Добавляем нового игрока
+    final newPlayer = {'id': user.id, 'username': user.userMetadata?['username'] ?? 'Player', 'playerNumber': players.length + 1, 'joined_at': DateTime.now().toIso8601String()};
+
+    players.add(newPlayer);
+
+    print('Adding new player: ${newPlayer['username']} as player ${players.length}');
+
+    // 5. Обновляем комнату
+    final updateResponse = await _client.from('rooms').update({'players': players, 'updated_at': DateTime.now().toIso8601String()}).eq('id', roomId).select();
+
+    if (updateResponse.isEmpty) {
+      throw Exception('Failed to update room - RLS policy may be blocking the update');
+    }
+
+    final updatedRoom = updateResponse.first as Map<String, dynamic>;
+    print('✅ Successfully joined room via direct update as player ${players.length}');
+
+    return {'success': true, 'role': 'player', 'playerNumber': players.length, 'room': updatedRoom};
   }
 
   // ХОД В ИГРЕ
@@ -347,21 +457,32 @@ class SupabaseService {
 
   // REAL-TIME ПОДПИСКИ
 
-  // Подписка на список комнат
+  // Real-time подписки
   Stream<List<Map<String, dynamic>>> watchRooms() {
-    return _client.from('rooms').stream(primaryKey: ['id']).order('created_at', ascending: false).map((list) => List<Map<String, dynamic>>.from(list));
+    return _client.from('rooms').stream(primaryKey: ['id']).order('created_at', ascending: false).map((list) {
+      print('Rooms stream update: ${list.length} items');
+      return List<Map<String, dynamic>>.from(list);
+    });
   }
 
-  // Подписка на конкретную комнату
   Stream<Map<String, dynamic>> watchRoom(String roomId) {
-    return _client.from('rooms').stream(primaryKey: ['id']).eq('id', roomId).map((list) => list.isNotEmpty ? list.first as Map<String, dynamic> : {});
+    return _client.from('rooms').stream(primaryKey: ['id']).eq('id', roomId).map((list) {
+      if (list.isNotEmpty) {
+        print('Room stream update for $roomId');
+        return list.first as Map<String, dynamic>;
+      } else {
+        print('Room stream returned empty list for $roomId');
+        return {};
+      }
+    });
   }
 
-  // Подписка на сообщения чата
   Stream<List<Map<String, dynamic>>> watchChatMessages(String roomId) {
-    return _client.from('chat_messages').stream(primaryKey: ['id']).eq('room_id', roomId).order('created_at').map((list) => List<Map<String, dynamic>>.from(list));
+    return _client.from('chat_messages').stream(primaryKey: ['id']).eq('room_id', roomId).order('created_at').map((list) {
+      print('Chat stream update for $roomId: ${list.length} messages');
+      return List<Map<String, dynamic>>.from(list);
+    });
   }
-
   // ДОПОЛНИТЕЛЬНЫЕ МЕТОДЫ
 
   // // Получение профиля пользователя
@@ -431,18 +552,39 @@ class SupabaseService {
     if (user == null) return null;
 
     try {
-      final response = await _client.from('profiles').select('*').eq('id', user.id);
+      print('Getting profile via RPC for user: ${user.id}');
+
+      // Используем RPC функцию для получения профиля
+      final response = await _client.rpc('get_user_profile', params: {'p_user_id': user.id});
+
+      if (response == null || response['error'] != null) {
+        print('RPC get profile failed: ${response?['error']}');
+        return await _getProfileDirect(user.id);
+      }
+
+      print('Profile retrieved successfully via RPC');
+      return Map<String, dynamic>.from(response);
+    } catch (e) {
+      print('Error getting profile via RPC: $e');
+      return await _getProfileDirect(user.id);
+    }
+  }
+
+  Future<Map<String, dynamic>?> _getProfileDirect(String userId) async {
+    try {
+      print('Trying direct profile retrieval...');
+
+      final response = await _client.from('profiles').select('*').eq('id', userId);
 
       if (response.isEmpty) {
-        // Если профиль не найден, создаем его
-        return await _createDefaultProfile(user.id);
+        print('Profile not found via direct method');
+        return null;
       }
 
+      print('Profile retrieved successfully via direct method');
       return response.first;
     } catch (e) {
-      if (kDebugMode) {
-        print('Error getting profile: $e');
-      }
+      print('Direct profile retrieval also failed: $e');
       return null;
     }
   }
@@ -483,13 +625,73 @@ class SupabaseService {
     final user = _client.auth.currentUser;
     if (user == null) throw Exception('Not authenticated');
 
-    final updateData = {'username': username, 'updated_at': DateTime.now().toIso8601String()};
+    try {
+      print('Updating profile via RPC for user: ${user.id}');
+      print('New username: $username, avatarUrl: $avatarUrl');
 
-    if (avatarUrl != null) {
-      updateData['avatar_url'] = avatarUrl;
+      // Используем RPC функцию для обновления профиля
+      final response = await _client.rpc('create_or_update_profile', params: {'p_user_id': user.id, 'p_username': username, 'p_avatar_url': avatarUrl});
+
+      print('RPC response: $response');
+
+      if (response == null || response['success'] != true) {
+        throw Exception('Failed to update profile via RPC: ${response?['error']}');
+      }
+
+      print('Profile updated successfully via RPC');
+    } catch (e) {
+      print('Error updating profile via RPC: $e');
+
+      // Если RPC не сработал, пробуем обычный метод как запасной вариант
+      await _updateProfileDirect(user.id, username, avatarUrl);
     }
+  }
 
-    await _client.from('profiles').update(updateData).eq('id', user.id);
+  Future<void> _updateProfileDirect(String userId, String username, String? avatarUrl) async {
+    try {
+      print('Trying direct profile update...');
+
+      final updateData = {'username': username, 'updated_at': DateTime.now().toIso8601String()};
+
+      if (avatarUrl != null) {
+        updateData['avatar_url'] = avatarUrl;
+      }
+
+      // Пробуем обновить профиль напрямую
+      final response = await _client.from('profiles').update(updateData).eq('id', userId).select();
+
+      if (response.isEmpty) {
+        print('Profile not found, creating new one...');
+        // Если профиль не существует, создаем его
+        await _createProfileDirect(userId, username, avatarUrl);
+      } else {
+        print('Profile updated successfully via direct method');
+      }
+    } catch (e) {
+      print('Direct profile update also failed: $e');
+      rethrow;
+    }
+  } // Прямое создание профиля
+
+  Future<void> _createProfileDirect(String userId, String username, String? avatarUrl) async {
+    try {
+      final profileData = {'id': userId, 'username': username, 'created_at': DateTime.now().toIso8601String(), 'updated_at': DateTime.now().toIso8601String()};
+
+      if (avatarUrl != null) {
+        profileData['avatar_url'] = avatarUrl;
+      }
+
+      final response = await _client.from('profiles').insert(profileData).select();
+
+      if (response.isEmpty) {
+        throw Exception('Failed to create profile via direct method');
+      }
+
+      print('Profile created successfully via direct method');
+    } catch (e) {
+      print('Error creating profile via direct method: $e');
+      rethrow;
+    }
   }
 
   // Обновление email
@@ -681,9 +883,13 @@ class SupabaseService {
     if (user == null) return;
 
     try {
+      print('Leaving room: $roomId');
+
+      // Получаем текущую комнату
       final roomResponse = await _client.from('rooms').select('*').eq('id', roomId);
 
       if (roomResponse.isEmpty) {
+        print('Room $roomId not found, already deleted?');
         return; // Комната уже удалена
       }
 
@@ -691,21 +897,59 @@ class SupabaseService {
       final players = List<Map<String, dynamic>>.from(room['players'] ?? []);
       final spectators = List<Map<String, dynamic>>.from(room['spectators'] ?? []);
 
-      // Удаляем пользователя из игроков или зрителей
+      print('Current players: ${players.length}, spectators: ${spectators.length}');
+
+      // Удаляем пользователя из игроков
+      final initialPlayerCount = players.length;
       players.removeWhere((p) => p['id'] == user.id);
+
+      // Удаляем пользователя из зрителей
       spectators.removeWhere((s) => s['id'] == user.id);
+
+      print('After removal - players: ${players.length}, spectators: ${spectators.length}');
+
+      // Если пользователь был удален из игроков, перенумеровываем оставшихся
+      if (players.length < initialPlayerCount) {
+        for (int i = 0; i < players.length; i++) {
+          players[i]['playerNumber'] = i + 1;
+        }
+      }
 
       // Если комната пуста, удаляем её
       if (players.isEmpty && spectators.isEmpty) {
+        print('Room is empty, deleting...');
         await _client.from('rooms').delete().eq('id', roomId);
+        print('Room deleted successfully');
       } else {
-        await _client.from('rooms').update({'players': players, 'spectators': spectators, 'updated_at': DateTime.now().toIso8601String()}).eq('id', roomId);
+        // Обновляем комнату с новыми списками
+        print('Updating room with new player/spectator lists...');
+        final updateResponse = await _client.from('rooms').update({'players': players, 'spectators': spectators, 'updated_at': DateTime.now().toIso8601String()}).eq('id', roomId).select();
+
+        if (updateResponse.isEmpty) {
+          print('Room update failed - trying alternative method...');
+          // Альтернативный метод - используем RPC
+          await _leaveRoomAlternative(roomId, user.id);
+        } else {
+          print('Room updated successfully');
+        }
       }
     } catch (e) {
-      if (kDebugMode) {
-        print('Leave room error: $e');
-      }
+      print('Leave room error details: $e');
       // Не бросаем исключение, так как выход из комнаты должен работать всегда
+    }
+  }
+
+  Future<void> _leaveRoomAlternative(String roomId, String userId) async {
+    try {
+      print('Trying alternative leave method via RPC...');
+
+      // Создаем RPC функцию для выхода из комнаты
+      await _client.rpc('leave_room', params: {'p_room_id': roomId, 'p_user_id': userId});
+
+      print('Alternative leave method successful');
+    } catch (e) {
+      print('Alternative leave method also failed: $e');
+      // Игнорируем ошибку, так как это альтернативный метод
     }
   }
 }
