@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
@@ -88,29 +90,29 @@ class SupabaseService {
   }
 
   // СОЗДАНИЕ КОМНАТЫ
-  Future<Map<String, dynamic>> createRoom(String roomName) async {
-    final user = _client.auth.currentUser;
-    if (user == null) throw Exception('Not authenticated');
+  // Future<Map<String, dynamic>> createRoom(String roomName) async {
+  //   final user = _client.auth.currentUser;
+  //   if (user == null) throw Exception('Not authenticated');
 
-    // Инициализируем пустую доску 15x15
-    final initialBoard = List.generate(15, (_) => List.filled(15, 0));
+  //   // Инициализируем пустую доску 15x15
+  //   final initialBoard = List.generate(15, (_) => List.filled(15, 0));
 
-    final response = await _client
-        .from('rooms')
-        .insert({
-          'name': roomName,
-          'created_by': user.id,
-          'game_state': {'board': initialBoard, 'currentPlayer': 1, 'gameStarted': false, 'gameOver': false, 'winner': null, 'lastMove': null},
-          'players': [
-            {'id': user.id, 'username': user.userMetadata?['username'] ?? 'Player', 'playerNumber': 1, 'joined_at': DateTime.now().toIso8601String()},
-          ],
-          'spectators': [],
-        })
-        .select()
-        .single();
+  //   final response = await _client
+  //       .from('rooms')
+  //       .insert({
+  //         'name': roomName,
+  //         'created_by': user.id,
+  //         'game_state': {'board': initialBoard, 'currentPlayer': 1, 'gameStarted': false, 'gameOver': false, 'winner': null, 'lastMove': null},
+  //         'players': [
+  //           {'id': user.id, 'username': user.userMetadata?['username'] ?? 'Player', 'playerNumber': 1, 'joined_at': DateTime.now().toIso8601String()},
+  //         ],
+  //         'spectators': [],
+  //       })
+  //       .select()
+  //       .single();
 
-    return response;
-  }
+  //   return response;
+  // }
 
   // ПОЛУЧЕНИЕ СПИСКА КОМНАТ
   Future<List<Map<String, dynamic>>> getRooms() async {
@@ -124,90 +126,116 @@ class SupabaseService {
     final user = _client.auth.currentUser;
     if (user == null) throw Exception('Not authenticated');
 
-    // Получаем текущую комнату
-    final room = await _client.from('rooms').select('*').eq('id', roomId).single() as Map<String, dynamic>;
+    try {
+      // Получаем текущую комнату с обработкой ошибок
+      final roomResponse = await _client.from('rooms').select('*').eq('id', roomId);
 
-    final players = List<Map<String, dynamic>>.from(room['players']);
-    final spectators = List<Map<String, dynamic>>.from(room['spectators']);
+      if (roomResponse.isEmpty) {
+        throw Exception('Room not found');
+      }
 
-    // Проверяем, не присоединен ли уже пользователь
-    if (players.any((p) => p['id'] == user.id) || spectators.any((s) => s['id'] == user.id)) {
-      return {
-        'success': true,
-        'role': players.any((p) => p['id'] == user.id) ? 'player' : 'spectator',
-        'playerNumber': players.firstWhere((p) => p['id'] == user.id, orElse: () => {})['playerNumber'] ?? 0,
-        'room': room,
-      };
-    }
+      final room = roomResponse.first as Map<String, dynamic>;
+      final players = List<Map<String, dynamic>>.from(room['players'] ?? []);
+      final spectators = List<Map<String, dynamic>>.from(room['spectators'] ?? []);
 
-    // Присоединяем как игрок или зритель
-    if (players.length < 2) {
-      final newPlayer = {'id': user.id, 'username': user.userMetadata?['username'] ?? 'Player', 'playerNumber': players.length + 1, 'joined_at': DateTime.now().toIso8601String()};
+      // Проверяем, не присоединен ли уже пользователь
+      if (players.any((p) => p['id'] == user.id) || spectators.any((s) => s['id'] == user.id)) {
+        return {
+          'success': true,
+          'role': players.any((p) => p['id'] == user.id) ? 'player' : 'spectator',
+          'playerNumber': players.firstWhere((p) => p['id'] == user.id, orElse: () => {})['playerNumber'] ?? 0,
+          'room': room,
+        };
+      }
 
-      players.add(newPlayer);
+      // Присоединяем как игрок или зритель
+      if (players.length < 2) {
+        final newPlayer = {'id': user.id, 'username': user.userMetadata?['username'] ?? 'Player', 'playerNumber': players.length + 1, 'joined_at': DateTime.now().toIso8601String()};
 
-      final updatedRoom = await _client.from('rooms').update({'players': players, 'updated_at': DateTime.now().toIso8601String()}).eq('id', roomId).select().single() as Map<String, dynamic>;
+        players.add(newPlayer);
 
-      return {'success': true, 'role': 'player', 'playerNumber': players.length, 'room': updatedRoom};
-    } else {
-      // Присоединяемся как зритель
-      final newSpectator = {'id': user.id, 'username': user.userMetadata?['username'] ?? 'Player', 'joined_at': DateTime.now().toIso8601String()};
+        // Обновляем комнату и получаем обновленные данные
+        final updateResponse = await _client.from('rooms').update({'players': players, 'updated_at': DateTime.now().toIso8601String()}).eq('id', roomId).select();
 
-      spectators.add(newSpectator);
+        if (updateResponse.isEmpty) {
+          throw Exception('Failed to update room');
+        }
 
-      final updatedRoom = await _client.from('rooms').update({'spectators': spectators, 'updated_at': DateTime.now().toIso8601String()}).eq('id', roomId).select().single() as Map<String, dynamic>;
+        final updatedRoom = updateResponse.first as Map<String, dynamic>;
 
-      return {'success': true, 'role': 'spectator', 'room': updatedRoom};
+        return {'success': true, 'role': 'player', 'playerNumber': players.length, 'room': updatedRoom};
+      } else {
+        // Присоединяемся как зритель
+        final newSpectator = {'id': user.id, 'username': user.userMetadata?['username'] ?? 'Player', 'joined_at': DateTime.now().toIso8601String()};
+
+        spectators.add(newSpectator);
+
+        // Обновляем комнату и получаем обновленные данные
+        final updateResponse = await _client.from('rooms').update({'spectators': spectators, 'updated_at': DateTime.now().toIso8601String()}).eq('id', roomId).select();
+
+        if (updateResponse.isEmpty) {
+          throw Exception('Failed to update room');
+        }
+
+        final updatedRoom = updateResponse.first as Map<String, dynamic>;
+
+        return {'success': true, 'role': 'spectator', 'room': updatedRoom};
+      }
+    } catch (e) {
+      if (kDebugMode) {
+        print('Join room error: $e');
+      }
+      rethrow;
     }
   }
 
   // ХОД В ИГРЕ
-  Future<Map<String, dynamic>> makeMove(String roomId, int row, int col) async {
-    final user = _client.auth.currentUser;
-    if (user == null) throw Exception('Not authenticated');
+  // Future<Map<String, dynamic>> makeMove(String roomId, int row, int col) async {
+  //   final user = _client.auth.currentUser;
+  //   if (user == null) throw Exception('Not authenticated');
 
-    // Получаем текущее состояние комнаты
-    final room = await _client.from('rooms').select('*').eq('id', roomId).single() as Map<String, dynamic>;
+  //   // Получаем текущее состояние комнаты
+  //   final room = await _client.from('rooms').select('*').eq('id', roomId).single() as Map<String, dynamic>;
 
-    final gameState = Map<String, dynamic>.from(room['game_state']);
-    final players = List<Map<String, dynamic>>.from(room['players']);
+  //   final gameState = Map<String, dynamic>.from(room['game_state']);
+  //   final players = List<Map<String, dynamic>>.from(room['players']);
 
-    final player = players.firstWhere((p) => p['id'] == user.id, orElse: () => {});
-    if (player.isEmpty) {
-      throw Exception('You are not a player in this room');
-    }
+  //   final player = players.firstWhere((p) => p['id'] == user.id, orElse: () => {});
+  //   if (player.isEmpty) {
+  //     throw Exception('You are not a player in this room');
+  //   }
 
-    // Проверяем возможность хода
-    if (!gameState['gameStarted'] || gameState['gameOver'] || gameState['currentPlayer'] != player['playerNumber']) {
-      throw Exception('Invalid move');
-    }
+  //   // Проверяем возможность хода
+  //   if (!gameState['gameStarted'] || gameState['gameOver'] || gameState['currentPlayer'] != player['playerNumber']) {
+  //     throw Exception('Invalid move');
+  //   }
 
-    final board = List<List<int>>.from(gameState['board'].map((row) => List<int>.from(row)));
-    if (row < 0 || row >= 15 || col < 0 || col >= 15 || board[row][col] != 0) {
-      throw Exception('Invalid position');
-    }
+  //   final board = List<List<int>>.from(gameState['board'].map((row) => List<int>.from(row)));
+  //   if (row < 0 || row >= 15 || col < 0 || col >= 15 || board[row][col] != 0) {
+  //     throw Exception('Invalid position');
+  //   }
 
-    // Выполняем ход
-    board[row][col] = player['playerNumber'] == 1 ? 1 : -1;
-    gameState['board'] = board;
-    gameState['lastMove'] = {'row': row, 'col': col, 'player': player['playerNumber'], 'playerName': player['username']};
+  //   // Выполняем ход
+  //   board[row][col] = player['playerNumber'] == 1 ? 1 : -1;
+  //   gameState['board'] = board;
+  //   gameState['lastMove'] = {'row': row, 'col': col, 'player': player['playerNumber'], 'playerName': player['username']};
 
-    // Проверяем победу
-    if (_checkWin(board, row, col, player['playerNumber'] == 1 ? 1 : -1)) {
-      gameState['gameOver'] = true;
-      gameState['winner'] = player['playerNumber'];
-    } else if (_checkDraw(board)) {
-      gameState['gameOver'] = true;
-      gameState['winner'] = 0;
-    } else {
-      gameState['currentPlayer'] = gameState['currentPlayer'] == 1 ? 2 : 1;
-    }
+  //   // Проверяем победу
+  //   if (_checkWin(board, row, col, player['playerNumber'] == 1 ? 1 : -1)) {
+  //     gameState['gameOver'] = true;
+  //     gameState['winner'] = player['playerNumber'];
+  //   } else if (_checkDraw(board)) {
+  //     gameState['gameOver'] = true;
+  //     gameState['winner'] = 0;
+  //   } else {
+  //     gameState['currentPlayer'] = gameState['currentPlayer'] == 1 ? 2 : 1;
+  //   }
 
-    // Сохраняем обновленное состояние
-    final updatedRoom = await _client.from('rooms').update({'game_state': gameState, 'updated_at': DateTime.now().toIso8601String()}).eq('id', roomId).select().single() as Map<String, dynamic>;
+  //   // Сохраняем обновленное состояние
+  //   final updatedRoom = await _client.from('rooms').update({'game_state': gameState, 'updated_at': DateTime.now().toIso8601String()}).eq('id', roomId).select().single() as Map<String, dynamic>;
 
-    return {'success': true, 'room': updatedRoom};
-  }
+  //   return {'success': true, 'room': updatedRoom};
+  // }
 
   // ПРОВЕРКА ПОБЕДЫ
   bool _checkWin(List<List<int>> board, int row, int col, int player) {
@@ -262,17 +290,17 @@ class SupabaseService {
   }
 
   // НАЧАТЬ ИГРУ
-  Future<void> startGame(String roomId) async {
-    final user = _client.auth.currentUser;
-    if (user == null) throw Exception('Not authenticated');
+  // Future<void> startGame(String roomId) async {
+  //   final user = _client.auth.currentUser;
+  //   if (user == null) throw Exception('Not authenticated');
 
-    final room = await _client.from('rooms').select('*').eq('id', roomId).single() as Map<String, dynamic>;
+  //   final room = await _client.from('rooms').select('*').eq('id', roomId).single() as Map<String, dynamic>;
 
-    final gameState = Map<String, dynamic>.from(room['game_state']);
-    gameState['gameStarted'] = true;
+  //   final gameState = Map<String, dynamic>.from(room['game_state']);
+  //   gameState['gameStarted'] = true;
 
-    await _client.from('rooms').update({'game_state': gameState, 'updated_at': DateTime.now().toIso8601String()}).eq('id', roomId);
-  }
+  //   await _client.from('rooms').update({'game_state': gameState, 'updated_at': DateTime.now().toIso8601String()}).eq('id', roomId);
+  // }
 
   // СБРОС ИГРЫ
   Future<void> resetGame(String roomId) async {
@@ -296,26 +324,26 @@ class SupabaseService {
   }
 
   // ПОКИНУТЬ КОМНАТУ
-  Future<void> leaveRoom(String roomId) async {
-    final user = _client.auth.currentUser;
-    if (user == null) return;
+  // Future<void> leaveRoom(String roomId) async {
+  //   final user = _client.auth.currentUser;
+  //   if (user == null) return;
 
-    final room = await _client.from('rooms').select('*').eq('id', roomId).single() as Map<String, dynamic>;
+  //   final room = await _client.from('rooms').select('*').eq('id', roomId).single() as Map<String, dynamic>;
 
-    final players = List<Map<String, dynamic>>.from(room['players']);
-    final spectators = List<Map<String, dynamic>>.from(room['spectators']);
+  //   final players = List<Map<String, dynamic>>.from(room['players']);
+  //   final spectators = List<Map<String, dynamic>>.from(room['spectators']);
 
-    // Удаляем пользователя из игроков или зрителей
-    players.removeWhere((p) => p['id'] == user.id);
-    spectators.removeWhere((s) => s['id'] == user.id);
+  //   // Удаляем пользователя из игроков или зрителей
+  //   players.removeWhere((p) => p['id'] == user.id);
+  //   spectators.removeWhere((s) => s['id'] == user.id);
 
-    // Если комната пуста, удаляем её
-    if (players.isEmpty && spectators.isEmpty) {
-      await _client.from('rooms').delete().eq('id', roomId);
-    } else {
-      await _client.from('rooms').update({'players': players, 'spectators': spectators, 'updated_at': DateTime.now().toIso8601String()}).eq('id', roomId);
-    }
-  }
+  //   // Если комната пуста, удаляем её
+  //   if (players.isEmpty && spectators.isEmpty) {
+  //     await _client.from('rooms').delete().eq('id', roomId);
+  //   } else {
+  //     await _client.from('rooms').update({'players': players, 'spectators': spectators, 'updated_at': DateTime.now().toIso8601String()}).eq('id', roomId);
+  //   }
+  // }
 
   // REAL-TIME ПОДПИСКИ
 
@@ -336,47 +364,47 @@ class SupabaseService {
 
   // ДОПОЛНИТЕЛЬНЫЕ МЕТОДЫ
 
-  // Получение профиля пользователя
-  Future<Map<String, dynamic>?> getProfile() async {
-    final user = _client.auth.currentUser;
-    if (user == null) return null;
+  // // Получение профиля пользователя
+  // Future<Map<String, dynamic>?> getProfile() async {
+  //   final user = _client.auth.currentUser;
+  //   if (user == null) return null;
 
-    try {
-      final response = await _client.from('profiles').select('*').eq('id', user.id).single();
+  //   try {
+  //     final response = await _client.from('profiles').select('*').eq('id', user.id).single();
 
-      return response;
-    } catch (e) {
-      if (kDebugMode) {
-        print('Error getting profile: $e');
-      }
-      return null;
-    }
-  }
+  //     return response;
+  //   } catch (e) {
+  //     if (kDebugMode) {
+  //       print('Error getting profile: $e');
+  //     }
+  //     return null;
+  //   }
+  // }
 
   // Обновление профиля
-  Future<void> updateProfile(String username) async {
-    final user = _client.auth.currentUser;
-    if (user == null) throw Exception('Not authenticated');
+  // Future<void> updateProfile(String username) async {
+  //   final user = _client.auth.currentUser;
+  //   if (user == null) throw Exception('Not authenticated');
 
-    await _client.from('profiles').update({'username': username, 'updated_at': DateTime.now().toIso8601String()}).eq('id', user.id);
-  }
+  //   await _client.from('profiles').update({'username': username, 'updated_at': DateTime.now().toIso8601String()}).eq('id', user.id);
+  // }
 
   // Получение статистики пользователя
-  Future<Map<String, dynamic>?> getUserStats() async {
-    final user = _client.auth.currentUser;
-    if (user == null) return null;
+  // Future<Map<String, dynamic>?> getUserStats() async {
+  //   final user = _client.auth.currentUser;
+  //   if (user == null) return null;
 
-    try {
-      final response = await _client.from('profiles').select('games_played, games_won').eq('id', user.id).single();
+  //   try {
+  //     final response = await _client.from('profiles').select('games_played, games_won').eq('id', user.id).single();
 
-      return response;
-    } catch (e) {
-      if (kDebugMode) {
-        print('Error getting user stats: $e');
-      }
-      return null;
-    }
-  }
+  //     return response;
+  //   } catch (e) {
+  //     if (kDebugMode) {
+  //       print('Error getting user stats: $e');
+  //     }
+  //     return null;
+  //   }
+  // }
 
   // Проверка подключения
   Future<bool> checkConnection() async {
@@ -395,5 +423,289 @@ class SupabaseService {
   void dispose() {
     // Supabase client автоматически управляет подписками
     // При необходимости можно добавить очистку кастомных подписок
+  }
+
+  // Получение профиля пользователя
+  Future<Map<String, dynamic>?> getProfile() async {
+    final user = _client.auth.currentUser;
+    if (user == null) return null;
+
+    try {
+      final response = await _client.from('profiles').select('*').eq('id', user.id);
+
+      if (response.isEmpty) {
+        // Если профиль не найден, создаем его
+        return await _createDefaultProfile(user.id);
+      }
+
+      return response.first;
+    } catch (e) {
+      if (kDebugMode) {
+        print('Error getting profile: $e');
+      }
+      return null;
+    }
+  }
+
+  // Метод для создания профиля по умолчанию
+  Future<Map<String, dynamic>> _createDefaultProfile(String userId) async {
+    try {
+      final defaultProfile = {'id': userId, 'username': 'Player', 'games_played': 0, 'games_won': 0, 'created_at': DateTime.now().toIso8601String(), 'updated_at': DateTime.now().toIso8601String()};
+
+      await _client.from('profiles').insert(defaultProfile);
+      return defaultProfile;
+    } catch (e) {
+      if (kDebugMode) {
+        print('Error creating default profile: $e');
+      }
+      // Возвращаем базовый профиль даже при ошибке
+      return {'id': userId, 'username': 'Player', 'games_played': 0, 'games_won': 0};
+    }
+  }
+  // Future<Map<String, dynamic>?> getProfile() async {
+  //   final user = _client.auth.currentUser;
+  //   if (user == null) return null;
+
+  //   try {
+  //     final response = await _client.from('profiles').select('*').eq('id', user.id).single();
+
+  //     return response;
+  //   } catch (e) {
+  //     if (kDebugMode) {
+  //       print('Error getting profile: $e');
+  //     }
+  //     return null;
+  //   }
+  // }
+
+  // Обновление профиля
+  Future<void> updateProfile({required String username, String? avatarUrl}) async {
+    final user = _client.auth.currentUser;
+    if (user == null) throw Exception('Not authenticated');
+
+    final updateData = {'username': username, 'updated_at': DateTime.now().toIso8601String()};
+
+    if (avatarUrl != null) {
+      updateData['avatar_url'] = avatarUrl;
+    }
+
+    await _client.from('profiles').update(updateData).eq('id', user.id);
+  }
+
+  // Обновление email
+  Future<void> updateEmail(String newEmail) async {
+    final user = _client.auth.currentUser;
+    if (user == null) throw Exception('Not authenticated');
+
+    await _client.auth.updateUser(UserAttributes(email: newEmail));
+  }
+
+  // Получение статистики игрока
+  Future<Map<String, dynamic>> getUserStats() async {
+    final user = _client.auth.currentUser;
+    if (user == null) throw Exception('Not authenticated');
+
+    try {
+      // Получаем профиль со статистикой
+      final profile = await _client.from('profiles').select('games_played, games_won, username, avatar_url').eq('id', user.id).single();
+
+      return profile;
+    } catch (e) {
+      if (kDebugMode) {
+        print('Error getting user stats: $e');
+      }
+      return {'games_played': 0, 'games_won': 0, 'username': 'Player', 'avatar_url': null};
+    }
+  }
+
+  // Загрузка аватара
+  Future<String?> uploadAvatar(File imageFile) async {
+    final user = _client.auth.currentUser;
+    if (user == null) throw Exception('Not authenticated');
+
+    try {
+      final fileExtension = imageFile.path.split('.').last;
+      final fileName = 'avatars/${user.id}/avatar_${DateTime.now().millisecondsSinceEpoch}.$fileExtension';
+
+      // Загружаем файл в Supabase Storage
+      await _client.storage.from('avatars').upload(fileName, imageFile);
+
+      // Получаем публичный URL
+      final String publicUrl = _client.storage.from('avatars').getPublicUrl(fileName);
+
+      return publicUrl;
+    } catch (e) {
+      if (kDebugMode) {
+        print('Error uploading avatar: $e');
+      }
+      return null;
+    }
+  }
+
+  // Удаление аккаунта
+  Future<void> deleteAccount() async {
+    final user = _client.auth.currentUser;
+    if (user == null) throw Exception('Not authenticated');
+
+    // Сначала удаляем профиль
+    await _client.from('profiles').delete().eq('id', user.id);
+
+    // Затем удаляем пользователя из auth
+    await _client.auth.admin.deleteUser(user.id);
+  }
+
+  Future<Map<String, dynamic>> createRoom(String roomName) async {
+    final user = _client.auth.currentUser;
+    if (user == null) throw Exception('Not authenticated');
+
+    try {
+      // Инициализируем пустую доску 15x15
+      final initialBoard = List.generate(15, (_) => List.filled(15, 0));
+
+      final response = await _client.from('rooms').insert({
+        'name': roomName,
+        'created_by': user.id,
+        'game_state': {'board': initialBoard, 'currentPlayer': 1, 'gameStarted': false, 'gameOver': false, 'winner': null, 'lastMove': null},
+        'players': [
+          {'id': user.id, 'username': user.userMetadata?['username'] ?? 'Player', 'playerNumber': 1, 'joined_at': DateTime.now().toIso8601String()},
+        ],
+        'spectators': [],
+      }).select();
+
+      if (response.isEmpty) {
+        throw Exception('Failed to create room');
+      }
+
+      return response.first;
+    } catch (e) {
+      if (kDebugMode) {
+        print('Create room error: $e');
+      }
+      rethrow;
+    }
+  }
+
+  Future<Map<String, dynamic>> makeMove(String roomId, int row, int col) async {
+    final user = _client.auth.currentUser;
+    if (user == null) throw Exception('Not authenticated');
+
+    try {
+      // Получаем текущее состояние комнаты
+      final roomResponse = await _client.from('rooms').select('*').eq('id', roomId);
+
+      if (roomResponse.isEmpty) {
+        throw Exception('Room not found');
+      }
+
+      final room = roomResponse.first as Map<String, dynamic>;
+      final gameState = Map<String, dynamic>.from(room['game_state'] ?? {});
+      final players = List<Map<String, dynamic>>.from(room['players'] ?? []);
+
+      final player = players.firstWhere((p) => p['id'] == user.id, orElse: () => {});
+      if (player.isEmpty) {
+        throw Exception('You are not a player in this room');
+      }
+
+      // Проверяем возможность хода
+      if (!gameState['gameStarted'] || gameState['gameOver'] || gameState['currentPlayer'] != player['playerNumber']) {
+        throw Exception('Invalid move');
+      }
+
+      final board = List<List<int>>.from((gameState['board'] as List).map((row) => List<int>.from(row)));
+
+      if (row < 0 || row >= 15 || col < 0 || col >= 15 || board[row][col] != 0) {
+        throw Exception('Invalid position');
+      }
+
+      // Выполняем ход
+      board[row][col] = player['playerNumber'] == 1 ? 1 : -1;
+      gameState['board'] = board;
+      gameState['lastMove'] = {'row': row, 'col': col, 'player': player['playerNumber'], 'playerName': player['username']};
+
+      // Проверяем победу
+      if (_checkWin(board, row, col, player['playerNumber'] == 1 ? 1 : -1)) {
+        gameState['gameOver'] = true;
+        gameState['winner'] = player['playerNumber'];
+      } else if (_checkDraw(board)) {
+        gameState['gameOver'] = true;
+        gameState['winner'] = 0;
+      } else {
+        gameState['currentPlayer'] = gameState['currentPlayer'] == 1 ? 2 : 1;
+      }
+
+      // Сохраняем обновленное состояние
+      final updateResponse = await _client.from('rooms').update({'game_state': gameState, 'updated_at': DateTime.now().toIso8601String()}).eq('id', roomId).select();
+
+      if (updateResponse.isEmpty) {
+        throw Exception('Failed to update game state');
+      }
+
+      final updatedRoom = updateResponse.first as Map<String, dynamic>;
+
+      return {'success': true, 'room': updatedRoom};
+    } catch (e) {
+      if (kDebugMode) {
+        print('Make move error: $e');
+      }
+      rethrow;
+    }
+  }
+
+  Future<void> startGame(String roomId) async {
+    final user = _client.auth.currentUser;
+    if (user == null) throw Exception('Not authenticated');
+
+    try {
+      final roomResponse = await _client.from('rooms').select('*').eq('id', roomId);
+
+      if (roomResponse.isEmpty) {
+        throw Exception('Room not found');
+      }
+
+      final room = roomResponse.first as Map<String, dynamic>;
+      final gameState = Map<String, dynamic>.from(room['game_state'] ?? {});
+      gameState['gameStarted'] = true;
+
+      await _client.from('rooms').update({'game_state': gameState, 'updated_at': DateTime.now().toIso8601String()}).eq('id', roomId);
+    } catch (e) {
+      if (kDebugMode) {
+        print('Start game error: $e');
+      }
+      rethrow;
+    }
+  }
+
+  // Исправленный метод leaveRoom
+  Future<void> leaveRoom(String roomId) async {
+    final user = _client.auth.currentUser;
+    if (user == null) return;
+
+    try {
+      final roomResponse = await _client.from('rooms').select('*').eq('id', roomId);
+
+      if (roomResponse.isEmpty) {
+        return; // Комната уже удалена
+      }
+
+      final room = roomResponse.first as Map<String, dynamic>;
+      final players = List<Map<String, dynamic>>.from(room['players'] ?? []);
+      final spectators = List<Map<String, dynamic>>.from(room['spectators'] ?? []);
+
+      // Удаляем пользователя из игроков или зрителей
+      players.removeWhere((p) => p['id'] == user.id);
+      spectators.removeWhere((s) => s['id'] == user.id);
+
+      // Если комната пуста, удаляем её
+      if (players.isEmpty && spectators.isEmpty) {
+        await _client.from('rooms').delete().eq('id', roomId);
+      } else {
+        await _client.from('rooms').update({'players': players, 'spectators': spectators, 'updated_at': DateTime.now().toIso8601String()}).eq('id', roomId);
+      }
+    } catch (e) {
+      if (kDebugMode) {
+        print('Leave room error: $e');
+      }
+      // Не бросаем исключение, так как выход из комнаты должен работать всегда
+    }
   }
 }

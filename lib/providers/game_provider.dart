@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:gomoku_multiplayer/services/supabase_service.dart';
@@ -47,6 +48,15 @@ class GameProvider with ChangeNotifier {
   bool get isLoading => _isLoading;
   User? get currentUser => _supabase.currentUser;
   bool get isAuthenticated => _supabase.currentUser != null;
+
+  Map<String, dynamic>? _userProfile;
+  Map<String, dynamic>? _userStats;
+  bool _isProfileLoading = false;
+
+  // Добавляем геттеры:
+  Map<String, dynamic>? get userProfile => _userProfile;
+  Map<String, dynamic>? get userStats => _userStats;
+  bool get isProfileLoading => _isProfileLoading;
 
   // Аутентификация по OTP
   Future<void> sendOTP(String email, {String? username}) async {
@@ -371,19 +381,19 @@ class GameProvider with ChangeNotifier {
   }
 
   // Проверка текущей сессии
-  Future<void> checkAuthStatus() async {
-    try {
-      final user = await _supabase.getCurrentUser();
-      if (user != null) {
-        _authState = AuthState.authenticated;
-        _safeNotifyListeners();
-      }
-    } catch (e) {
-      if (kDebugMode) {
-        print('Auth check error: $e');
-      }
-    }
-  }
+  // Future<void> checkAuthStatus() async {
+  //   try {
+  //     final user = await _supabase.getCurrentUser();
+  //     if (user != null) {
+  //       _authState = AuthState.authenticated;
+  //       _safeNotifyListeners();
+  //     }
+  //   } catch (e) {
+  //     if (kDebugMode) {
+  //       print('Auth check error: $e');
+  //     }
+  //   }
+  // }
 
   bool _isDisposed = false;
 
@@ -392,6 +402,113 @@ class GameProvider with ChangeNotifier {
     _isDisposed = true;
     _successTimer?.cancel();
     super.dispose();
+  }
+
+  // Загрузка профиля пользователя
+  Future<void> loadUserProfile() async {
+    _setProfileLoading(true);
+    try {
+      _userProfile = await _supabase.getProfile();
+      _userStats = await _supabase.getUserStats();
+      _safeNotifyListeners();
+    } catch (e) {
+      if (kDebugMode) {
+        print('Error loading user profile: $e');
+      }
+    } finally {
+      _setProfileLoading(false);
+    }
+  }
+
+  // Обновление профиля
+  Future<void> updateProfile({required String username, String? avatarUrl}) async {
+    _setProfileLoading(true);
+    try {
+      await _supabase.updateProfile(username: username, avatarUrl: avatarUrl);
+
+      // Перезагружаем профиль
+      await loadUserProfile();
+      _safeNotifyListeners();
+    } catch (e) {
+      if (kDebugMode) {
+        print('Error updating profile: $e');
+      }
+      rethrow;
+    } finally {
+      _setProfileLoading(false);
+    }
+  }
+
+  // Обновление email
+  Future<void> updateEmail(String newEmail) async {
+    _setProfileLoading(true);
+    try {
+      await _supabase.updateEmail(newEmail);
+      _safeNotifyListeners();
+    } catch (e) {
+      if (kDebugMode) {
+        print('Error updating email: $e');
+      }
+      rethrow;
+    } finally {
+      _setProfileLoading(false);
+    }
+  }
+
+  // Загрузка аватара
+  Future<String?> uploadAvatar(File imageFile) async {
+    try {
+      final avatarUrl = await _supabase.uploadAvatar(imageFile);
+      if (avatarUrl != null) {
+        // Обновляем профиль с новым аватаром
+        await updateProfile(username: _userProfile?['username'] ?? _username ?? 'Player', avatarUrl: avatarUrl);
+      }
+      return avatarUrl;
+    } catch (e) {
+      if (kDebugMode) {
+        print('Error uploading avatar: $e');
+      }
+      rethrow;
+    }
+  }
+
+  // Удаление аккаунта
+  Future<void> deleteAccount() async {
+    _setProfileLoading(true);
+    try {
+      await _supabase.deleteAccount();
+      await signOut();
+    } catch (e) {
+      if (kDebugMode) {
+        print('Error deleting account: $e');
+      }
+      rethrow;
+    } finally {
+      _setProfileLoading(false);
+    }
+  }
+
+  // Вспомогательный метод для загрузки профиля
+  void _setProfileLoading(bool loading) {
+    _isProfileLoading = loading;
+    _safeNotifyListeners();
+  }
+
+  // Обновляем метод checkAuthStatus для загрузки профиля
+  Future<void> checkAuthStatus() async {
+    try {
+      final user = await _supabase.getCurrentUser();
+      if (user != null) {
+        _authState = AuthState.authenticated;
+        // Загружаем профиль при успешной аутентификации
+        await loadUserProfile();
+        _safeNotifyListeners();
+      }
+    } catch (e) {
+      if (kDebugMode) {
+        print('Auth check error: $e');
+      }
+    }
   }
 }
 

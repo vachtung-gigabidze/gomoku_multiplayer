@@ -13,6 +13,7 @@ class GomokuApp extends StatelessWidget {
       providers: [ChangeNotifierProvider(create: (_) => GameProvider())],
       child: MaterialApp(
         title: 'Gomoku Multiplayer',
+        debugShowCheckedModeBanner: false,
         theme: ThemeData(primarySwatch: Colors.blue, useMaterial3: true),
         home: const LobbyScreen(),
         routes: {'/room': (context) => const RoomScreen()},
