@@ -457,34 +457,45 @@ class SupabaseService {
 
   // REAL-TIME ПОДПИСКИ
 
-  // Real-time подписки
+  // Polling методы вместо real-time
   Stream<List<Map<String, dynamic>>> watchRooms() {
-    return _client.from('rooms').stream(primaryKey: ['id']).order('created_at', ascending: false).map((list) {
-      print('Rooms stream update: ${list.length} items');
-      return List<Map<String, dynamic>>.from(list);
-    });
+    // Для бесплатного тарифа используем polling каждые 5 секунд
+    return Stream.periodic(const Duration(seconds: 5)).asyncMap((_) => getRooms()).asBroadcastStream();
   }
 
   Stream<Map<String, dynamic>> watchRoom(String roomId) {
-    return _client.from('rooms').stream(primaryKey: ['id']).eq('id', roomId).map((list) {
-      if (list.isNotEmpty) {
-        print('Room stream update for $roomId');
-        return list.first as Map<String, dynamic>;
-      } else {
-        print('Room stream returned empty list for $roomId');
-        return {};
-      }
-    });
+    // Polling для конкретной комнаты каждые 2 секунды
+    return Stream.periodic(const Duration(seconds: 2)).asyncMap((_) => _getRoomById(roomId)).where((room) => room.isNotEmpty).asBroadcastStream();
   }
 
   Stream<List<Map<String, dynamic>>> watchChatMessages(String roomId) {
-    return _client.from('chat_messages').stream(primaryKey: ['id']).eq('room_id', roomId).order('created_at').map((list) {
-      print('Chat stream update for $roomId: ${list.length} messages');
-      return List<Map<String, dynamic>>.from(list);
-    });
+    // Polling для чата каждые 1 секунду
+    return Stream.periodic(const Duration(seconds: 1)).asyncMap((_) => _getChatMessages(roomId)).asBroadcastStream();
   }
-  // ДОПОЛНИТЕЛЬНЫЕ МЕТОДЫ
 
+  // ДОПОЛНИТЕЛЬНЫЕ МЕТОДЫ
+  // Вспомогательные методы для polling
+  Future<Map<String, dynamic>> _getRoomById(String roomId) async {
+    try {
+      final response = await _client.from('rooms').select('*').eq('id', roomId);
+
+      return response.isEmpty ? {} : response.first;
+    } catch (e) {
+      print('Error getting room by id: $e');
+      return {};
+    }
+  }
+
+  Future<List<Map<String, dynamic>>> _getChatMessages(String roomId) async {
+    try {
+      final response = await _client.from('chat_messages').select('*').eq('room_id', roomId).order('created_at');
+
+      return List<Map<String, dynamic>>.from(response);
+    } catch (e) {
+      print('Error getting chat messages: $e');
+      return [];
+    }
+  }
   // // Получение профиля пользователя
   // Future<Map<String, dynamic>?> getProfile() async {
   //   final user = _client.auth.currentUser;
